@@ -80,6 +80,7 @@ SETTINGS = {
                      lambda v: "Picsum" if v == "online" else "Folder", 2),
     "photo_every": ("Photo every", [10, 30, 60, 300, 900], 60,
                     lambda v: f"{v} s" if v < 60 else f"{v // 60} min", 2),
+    "photo_idle": ("Photos after", [0, 1, 2, 5, 10, 30], 0, lambda v: minutes(v, "Never"), 2),
 }
 SET_PAGES = 3
 SET_Y, SET_ROW = 44, 34
@@ -840,6 +841,10 @@ class UI:
         if self.cfg["lock"] and not self.pin_mode and pin_is_set() and idle > self.cfg["lock"] * 60:
             self.pin_mode, self.pin_buf, self.pin_msg = "unlock", "", ""
             self.page, self.touch_test = 0, False
+        if (self.cfg["photo_idle"] and idle > self.cfg["photo_idle"] * 60 and not self.pin_mode
+                and self.pages[self.page] != "Photos"):
+            self.set_page_index(self.pages.index("Photos"))  # screensaver
+            self.touch_test = False
         if self.cfg["sleep"] and idle > self.cfg["sleep"] * 60:
             self.sleeping = True
 

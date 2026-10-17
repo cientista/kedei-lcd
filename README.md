@@ -150,6 +150,8 @@ The PIN lock also covers this tab.
 
 The *Photos* tab shows a new photo every minute (*Settings* → page 3) over the
 whole screen with a small clock; any tap returns to the previous tab.
+With *Photos after* set, it also starts by itself as a screensaver after that
+many minutes without a touch.
 Portrait photos are shown whole over a blurred copy of themselves.
 
 Sources (*Photo source* setting):

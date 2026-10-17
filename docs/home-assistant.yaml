@@ -116,6 +116,17 @@ template:
             data: {path: settings, body: {photo_every: "{{ option }}"}}
           - action: homeassistant.update_entity
             target: {entity_id: sensor.pi_screen}
+      - name: Pi Screen Photos After
+        unique_id: kedei_photo_idle
+        icon: mdi:image-frame
+        availability: "{{ state_attr('sensor.pi_screen', 'settings') is not none }}"
+        options: "{{ (state_attr('sensor.pi_screen', 'settings') or {}).get('photo_idle', {}).get('options', []) }}"
+        state: "{{ (state_attr('sensor.pi_screen', 'settings') or {}).get('photo_idle', {}).get('text') }}"
+        select_option:
+          - action: rest_command.kedei_ui
+            data: {path: settings, body: {photo_idle: "{{ option }}"}}
+          - action: homeassistant.update_entity
+            target: {entity_id: sensor.pi_screen}
       - name: Pi Screen Night Mode
         unique_id: kedei_night
         icon: mdi:weather-night
