@@ -65,6 +65,8 @@ init sequences and frame formats), 32-bit OS.
       [Home Assistant page](#home-assistant-page);
     - *Docker* (when Docker is installed): containers with start/stop
       buttons (tap twice to confirm);
+    - *Photos*: full-screen photo frame with the time and date in the corner,
+      tap anywhere to go back, see [Photo frame](#photo-frame);
     - *Settings*: background color, refresh interval, night mode (dimmed
       colors on a schedule), screen off after inactivity, PIN lock with an
       on-screen keypad, warning thresholds, touch calibration and touch test
@@ -143,6 +145,20 @@ Tile options:
 | `service`, `target` | button without an entity, e.g. `"service": "light.turn_off", "target": "all"` |
 
 The PIN lock also covers this tab.
+
+## Photo frame
+
+The *Photos* tab shows a new photo every minute (*Settings* → page 3) over the
+whole screen with a small clock; any tap returns to the previous tab.
+Portrait photos are shown whole over a blurred copy of themselves.
+
+Sources (*Photo source* setting):
+
+- **Picsum** (default) – random photos from [Lorem Picsum](https://picsum.photos),
+  no account or API key; needs internet;
+- **Folder** – your own `.jpg`/`.png`/`.webp` files in `/var/lib/kedei-ui/photos`
+  (change with `KEDEI_UI_PHOTOS`), e.g. `scp *.jpg pi@raspberrypi:/var/lib/kedei-ui/photos/`.
+  New files are picked up without a restart.
 
 ## HTTP API
 

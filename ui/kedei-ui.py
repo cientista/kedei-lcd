@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""kedei-ui: touch UI for the KeDei LCD (status / graphs / HA / docker / settings pages).
+"""kedei-ui: touch UI for the KeDei LCD (status / graphs / HA / docker / photos / settings pages).
 
 Renders a 480x320 RGB565 frame that the kedei-lcd daemon puts on the screen
 and reads taps from the "KeDei Touch" input device."""
@@ -7,8 +7,10 @@ and reads taps from the "KeDei Touch" input device."""
 import calendar
 import hashlib
 import http.server
+import io
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -20,7 +22,7 @@ import time
 import urllib.request
 from collections import deque
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 OUT = "/run/kedei/fb.raw"
 TOUCH_STATE = "/run/kedei/touch"
@@ -28,6 +30,10 @@ CAL_PATH = "/etc/kedei-touch.conf"
 SETTINGS_PATH = "/etc/kedei-ui.conf"
 PIN_PATH = "/etc/kedei-ui.pin"
 HA_PATH = "/etc/kedei-ui.ha.json"
+# Photo frame page: random photos from Lorem Picsum (no API key) or from a local folder.
+PHOTOS_DIR = os.environ.get("KEDEI_UI_PHOTOS", "/var/lib/kedei-ui/photos")
+PHOTOS_URL = "https://picsum.photos/480/320"
+PHOTO_EXT = (".jpg", ".jpeg", ".png", ".webp")
 # Local HTTP API (settings, current page, status); localhost only.
 API_ADDR = ("127.0.0.1", int(os.environ.get("KEDEI_UI_API_PORT", "8091")))
 API_READONLY = ("lock",)  # the PIN lock can only be changed on the screen
@@ -45,7 +51,7 @@ BAD = (255, 70, 70)
 TAB_BG = (30, 30, 40)
 
 # HA is shown only when HA_PATH is configured, Docker only when docker is installed.
-PAGES = ["Status", "Graphs", "HA", "Docker", "Settings"]
+PAGES = ["Status", "Graphs", "HA", "Docker", "Photos", "Settings"]
 # Calibration targets: inset corners, then the center for verification.
 CAL_TARGETS = [(30, 30), (450, 30), (450, 290), (30, 290), (240, 160)]
 
@@ -70,8 +76,12 @@ SETTINGS = {
     "temp_bad": ("Temp alert", list(range(55, 86, 5)), 75, lambda v: f"{v}°C", 1),
     "use_warn": ("Usage warn", list(range(50, 96, 5)), 75, lambda v: f"{v}%", 1),
     "use_bad": ("Usage alert", list(range(55, 100, 5)), 90, lambda v: f"{v}%", 1),
+    "photo_source": ("Photo source", ["online", "folder"], "online",
+                     lambda v: "Picsum" if v == "online" else "Folder", 2),
+    "photo_every": ("Photo every", [10, 30, 60, 300, 900], 60,
+                    lambda v: f"{v} s" if v < 60 else f"{v // 60} min", 2),
 }
-SET_PAGES = 2
+SET_PAGES = 3
 SET_Y, SET_ROW = 44, 34
 SET_BUTTONS = {"page": (10, 252, 150, 282), "calibrate": (160, 252, 315, 282),
                "test": (325, 252, 470, 282)}
@@ -536,6 +546,83 @@ def compute_calibration(raw):
 
 # --- UI ------------------------------------------------------------------------
 
+class Photos:
+    """Slideshow: a random photo from Lorem Picsum or PHOTOS_DIR as a 480x320 frame."""
+
+    def __init__(self, wake):
+        self.wake = wake
+        self.frame = None
+        self.count = 0
+        self.next_at = 0.0
+        self.loading = False
+        self.error = ""
+        self.source = None
+        self.recent = deque(maxlen=20)  # avoid repeating the last few photos
+
+    def files(self):
+        try:
+            return sorted(os.path.join(PHOTOS_DIR, n) for n in os.listdir(PHOTOS_DIR)
+                          if n.lower().endswith(PHOTO_EXT))
+        except OSError:
+            return []
+
+    def get(self, every, source):
+        """Returns the current frame, starting the next photo load when it is due."""
+        if time.monotonic() >= self.next_at and not self.loading:
+            self.loading = True
+            target = self.load_online if source == "online" else self.load
+            threading.Thread(target=target, args=(every,), daemon=True).start()
+        return self.frame
+
+    def skip(self):
+        self.next_at = 0.0
+
+    def load_online(self, every):
+        try:
+            req = urllib.request.Request(PHOTOS_URL, headers={"User-Agent": "kedei-ui"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                self.frame = self.prepare(io.BytesIO(r.read()))
+            self.error = ""
+        except Exception as e:
+            self.error = f"no photo: {e}"[:60]  # keep showing the last photo
+            every = min(every, 30)
+        self.next_at = time.monotonic() + every
+        self.loading = False
+        self.wake()
+
+    def load(self, every):
+        self.error = ""
+        files = self.files()
+        self.count = len(files)
+        frame = None
+        fresh = [f for f in files if f not in self.recent] or files
+        for path in random.sample(fresh, min(len(fresh), 3)):  # a few tries if a file is broken
+            try:
+                frame = self.prepare(path)
+                self.recent.append(path)
+                break
+            except Exception:
+                continue
+        self.frame = frame
+        self.next_at = time.monotonic() + every
+        self.loading = False
+        self.wake()
+
+    @staticmethod
+    def prepare(src):
+        img = Image.open(src)
+        img.draft("RGB", (W * 2, H * 2))  # JPEG: decode at reduced size, much faster on a Pi
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        ratio = (img.width / img.height) / (W / H)
+        if 0.85 < ratio < 1.2:
+            return ImageOps.fit(img, (W, H), Image.LANCZOS)
+        # Portrait or panorama: whole photo over a blurred, darkened copy of itself.
+        bg = ImageOps.fit(img, (W, H)).filter(ImageFilter.GaussianBlur(16)).point(lambda v: v * 6 // 10)
+        fg = ImageOps.contain(img, (W, H), Image.LANCZOS)
+        bg.paste(fg, ((W - fg.width) // 2, (H - fg.height) // 2))
+        return bg
+
+
 class UI:
     def __init__(self):
         self.font = ImageFont.truetype(FONT, 18)
@@ -568,6 +655,8 @@ class UI:
         self.ha = HomeAssistant(self.wake.set)
         self.ha.start()
         self.ha_pressed = None  # (tile index, until) for the tap highlight
+        self.photos = Photos(self.wake.set)
+        self.prev_page = 0  # page to return to when the photo frame is tapped
         self.pages = [p for p in PAGES
                       if (p != "HA" or self.ha.tiles) and (p != "Docker" or shutil.which("docker"))]
 
@@ -581,8 +670,10 @@ class UI:
                 self.sleeping = False  # this tap only wakes the screen up
             elif self.pin_mode:
                 self.pin_tap(x, y)
+            elif self.pages[self.page] == "Photos":
+                self.page = self.prev_page  # any tap closes the photo frame
             elif y >= H - TAB_H:
-                self.page = min(x * len(self.pages) // W, len(self.pages) - 1)
+                self.set_page_index(min(x * len(self.pages) // W, len(self.pages) - 1))
                 self.touch_test = False
             elif self.touch_test:
                 self.taps = (self.taps + [(x, y)])[-8:]
@@ -596,6 +687,12 @@ class UI:
             if self.ha.visible:
                 self.ha.poke.set()
         self.wake.set()
+
+    def set_page_index(self, i):
+        if self.pages[i] == "Photos" and self.pages[self.page] != "Photos":
+            self.prev_page = self.page
+            self.photos.skip()  # start with a new photo
+        self.page = i
 
     def docker_tap(self, x, y):
         if x < DOCKER_BUTTON_X:
@@ -766,11 +863,13 @@ class UI:
 
     def draw_tabs(self, d):
         tw = W // len(self.pages)
+        widest = max(d.textlength(name, font=self.font) for name in self.pages)
+        font = self.font if widest <= tw - 6 else self.small
         for i, name in enumerate(self.pages):
             x0 = i * tw
             active = i == self.page
             d.rectangle([x0, H - TAB_H, x0 + tw - 1, H - 1], fill=ACCENT if active else TAB_BG)
-            d.text((x0 + tw // 2, H - TAB_H // 2), name, font=self.font,
+            d.text((x0 + tw // 2, H - TAB_H // 2), name, font=font,
                    fill=self.bg if active else FG, anchor="mm")
 
     def header(self, d, title):
@@ -947,6 +1046,29 @@ class UI:
         d.line([x, y - r, x, y + r], fill=color, width=2)
         d.ellipse([x - 4, y - 4, x + 4, y + 4], outline=color)
 
+    def page_photos(self, d):
+        source = self.cfg["photo_source"]
+        if source != self.photos.source:
+            self.photos.source, self.photos.frame = source, None
+            self.photos.skip()
+        frame = self.photos.get(self.cfg["photo_every"], source)
+        if frame is None:
+            if self.photos.error:
+                msg = self.photos.error
+            elif source == "folder" and not self.photos.loading and not self.photos.count:
+                msg = f"Add photos to {PHOTOS_DIR}"
+            else:
+                msg = "Loading..."
+            d.text((W // 2, H // 2), msg, font=self.small, fill=DIM, anchor="mm")
+        else:
+            self.canvas.paste(frame)
+        # Clock in the bottom right corner, outlined so it reads on any photo.
+        x, y = W - 12, H - 10
+        d.text((x, y), time.strftime("%a %d %b"), font=self.small, fill=FG, anchor="rd",
+               stroke_width=2, stroke_fill=(0, 0, 0))
+        d.text((x, y - 20), time.strftime("%H:%M"), font=self.big, fill=FG, anchor="rd",
+               stroke_width=3, stroke_fill=(0, 0, 0))
+
     def page_settings(self, d):
         if self.cal_step is not None:
             tx, ty = CAL_TARGETS[self.cal_step]
@@ -1019,13 +1141,13 @@ class UI:
             self.update_idle()
             if self.sleeping:
                 return Image.new("RGB", (W, H), (0, 0, 0))
-            img = Image.new("RGB", (W, H), self.bg)
+            img = self.canvas = Image.new("RGB", (W, H), self.bg)
             d = ImageDraw.Draw(img)
             if self.pin_mode:
                 self.page_pin(d)
             else:
                 getattr(self, "page_" + self.pages[self.page].lower())(d)
-                if self.cal_step is None:
+                if self.cal_step is None and self.pages[self.page] != "Photos":
                     self.draw_tabs(d)
         if night_active(self.cfg):
             k = self.cfg["night_dim"] / 100
@@ -1082,7 +1204,8 @@ class Api(http.server.BaseHTTPRequestHandler):
             elif self.path == "/page":
                 if body.get("page") not in ui.pages:
                     return self.reply(400, {"error": "pages: " + ", ".join(ui.pages)})
-                ui.page, ui.touch_test = ui.pages.index(body["page"]), False
+                ui.set_page_index(ui.pages.index(body["page"]))
+                ui.touch_test = False
                 ui.ha.visible = body["page"] == "HA"
                 ui.sleeping, ui.last_touch = False, time.monotonic()
             elif self.path == "/wake":

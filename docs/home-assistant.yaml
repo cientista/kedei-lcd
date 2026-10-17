@@ -94,6 +94,28 @@ template:
             data: {path: settings, body: {refresh: "{{ option }}"}}
           - action: homeassistant.update_entity
             target: {entity_id: sensor.pi_screen}
+      - name: Pi Screen Photo Source
+        unique_id: kedei_photo_source
+        icon: mdi:image-multiple
+        availability: "{{ state_attr('sensor.pi_screen', 'settings') is not none }}"
+        options: "{{ (state_attr('sensor.pi_screen', 'settings') or {}).get('photo_source', {}).get('options', []) }}"
+        state: "{{ (state_attr('sensor.pi_screen', 'settings') or {}).get('photo_source', {}).get('text') }}"
+        select_option:
+          - action: rest_command.kedei_ui
+            data: {path: settings, body: {photo_source: "{{ option }}"}}
+          - action: homeassistant.update_entity
+            target: {entity_id: sensor.pi_screen}
+      - name: Pi Screen Photo Every
+        unique_id: kedei_photo_every
+        icon: mdi:timer-outline
+        availability: "{{ state_attr('sensor.pi_screen', 'settings') is not none }}"
+        options: "{{ (state_attr('sensor.pi_screen', 'settings') or {}).get('photo_every', {}).get('options', []) }}"
+        state: "{{ (state_attr('sensor.pi_screen', 'settings') or {}).get('photo_every', {}).get('text') }}"
+        select_option:
+          - action: rest_command.kedei_ui
+            data: {path: settings, body: {photo_every: "{{ option }}"}}
+          - action: homeassistant.update_entity
+            target: {entity_id: sensor.pi_screen}
       - name: Pi Screen Night Mode
         unique_id: kedei_night
         icon: mdi:weather-night
